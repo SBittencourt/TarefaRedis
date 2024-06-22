@@ -274,53 +274,68 @@ def trash_menu(user_id):
 def favorites_menu(user_id):
     print("\nFavoritos:")
     user = read_user(user_id)
-    if "favoritos" not in user:
-        user["favoritos"] = []
+    if user:
+        if "favoritos" not in user:
+            user["favoritos"] = []
 
-    while True:
-        print("\n1 - Adicionar favorito")
-        print("2 - Remover favorito")
-        print("3 - Listar favoritos")
-        print("S - Sair")
-        choice = input("Digite a opção desejada: ")
+        while True:
+            print("\n1 - Adicionar favorito")
+            print("2 - Remover favorito")
+            print("3 - Listar favoritos")
+            print("S - Sair")
+            choice = input("Digite a opção desejada: ")
 
-        if choice == '1':
-            products = list_all_products(user_id)
-            for i, product in enumerate(products):
-                print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
-            product_choice = int(input("Digite o número do produto que deseja adicionar aos favoritos: ")) - 1
-            if 0 <= product_choice < len(products):
-                favorite_product = products[product_choice]
-                user["favoritos"].append(favorite_product["_id"])
-                update_user(user_id, {"favoritos": user["favoritos"]})
-                print(f"Produto '{favorite_product['nome']}' adicionado aos favoritos.")
-            else:
-                print("Opção inválida.")
-        elif choice == '2':
-            for i, product_id in enumerate(user["favoritos"]):
-                product = read_product(product_id)
-                print(f"{i + 1} - {product['nome']} (Preço: {product['preco']})")
-            product_choice = int(input("Digite o número do produto que deseja remover dos favoritos: ")) - 1
-            if 0 <= product_choice < len(user["favoritos"]):
-                removed_product_id = user["favoritos"].pop(product_choice)
-                update_user(user_id, {"favoritos": user["favoritos"]})
-                removed_product = read_product(removed_product_id)
-                print(f"Produto '{removed_product['nome']}' removido dos favoritos.")
-            else:
-                print("Opção inválida.")
-        elif choice == '3':
-            if user["favoritos"]:
-                for product_id in user["favoritos"]:
+            if choice == '1':
+                products = list_all_products(user_id)
+                for i, product in enumerate(products):
+                    print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
+                product_choice = int(input("Digite o número do produto que deseja adicionar aos favoritos: ")) - 1
+                if 0 <= product_choice < len(products):
+                    favorite_product = products[product_choice]
+                    user["favoritos"].append(str(favorite_product["_id"]))  # Convertendo para string
+                    update_user(user_id, {"favoritos": user["favoritos"]})
+                    print(f"Produto '{favorite_product['nome']}' adicionado aos favoritos.")
+                else:
+                    print("Opção inválida.")
+            elif choice == '2':
+                for i, product_id in enumerate(user["favoritos"]):
                     product = read_product(product_id)
-                    print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}")
+                    if product:
+                        print(f"{i + 1} - {product['nome']} (Preço: {product['preco']})")
+                product_choice = int(input("Digite o número do produto que deseja remover dos favoritos: ")) - 1
+                if 0 <= product_choice < len(user["favoritos"]):
+                    removed_product_id = user["favoritos"].pop(product_choice)
+                    update_user(user_id, {"favoritos": user["favoritos"]})
+                    removed_product = read_product(removed_product_id)
+                    if removed_product:
+                        print(f"Produto '{removed_product['nome']}' removido dos favoritos.")
+                    else:
+                        print("Produto não encontrado.")
+                else:
+                    print("Opção inválida.")
+            elif choice == '3':
+                if user["favoritos"]:
+                    for product_id in user["favoritos"]:
+                        product = read_product(product_id)
+                        if product:
+                            print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}")
+                        else:
+                            print(f"Produto com ID {product_id} não encontrado.")
+                else:
+                    print("Você não possui produtos favoritos.")
+            elif choice.upper() == 'S':
+                break
             else:
-                print("Você não possui produtos favoritos.")
-        elif choice.upper() == 'S':
-            break
-        else:
-            print("Opção inválida.")
+                print("Opção inválida.")
+    else:
+        print("Usuário não encontrado.")
+
 
 def view_profile(user_id):
+
+    from bson import ObjectId
+    user_id = ObjectId(user_id)  
+
     user = read_user(user_id)
     if user:
         print(f"Nome: {user['nome']}, Sobrenome: {user['sobrenome']}, CPF: {user['cpf']}, Endereço: {user['endereco']}, Email: {user['email']}, Telefone: {user['telefone']}")
@@ -331,6 +346,7 @@ def view_profile(user_id):
             print(f"Produto: {product['nome']}, Data da compra: {compra['data_compra']}")
     else:
         print("Usuário não encontrado.")
+
 
 if __name__ == "__main__":
     main_menu()
