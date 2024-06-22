@@ -1,419 +1,336 @@
 import redis
-import pymongo
-import json
-from pymongo.server_api import ServerApi
+from pymongo import MongoClient
 from datetime import datetime, timedelta
-from pymongo.mongo_client import MongoClient
+import json
+import uuid
 
-import crud_usuario
-import crud_produto
-import crud_vendedor
-import crud_compras
-import crud_favoritos
+# Configurar conexão com MongoDB
+uri = "mongodb+srv://silmara:123@cluster0.05p7qyc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+client = MongoClient(uri)
+db = client.RedisMercadoLivre  # Banco de dados renomeado
+usuarios_collection = db.usuarios  # Coleção de usuários
+produtos_collection = db.produtos  # Coleção de produtos
+compras_collection = db.compras  # Coleção de compras
 
-# Conexão com o Redis
-r = redis.Redis(
+# Configurar conexão com Redis
+redis_client = redis.Redis(
     host='redis-17733.c11.us-east-1-2.ec2.redns.redis-cloud.com',
     port=17733,
     password='FX4HKWXiS1lTASjrm1SE7nWKhqJtW55s'
 )
 
-# Substitua '<password>' pela sua senha real.
-uri = "mongodb+srv://silmara:<password>@cluster0.05p7qyc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-client = MongoClient(uri, server_api=ServerApi('1'))
-db = client.mercadolivre
+SESSION_TIMEOUT = 30 * 60  # 30 minutos
+TRASH_TIMEOUT = 30 * 60  # 30 minutos
 
-# Função de Login Temporário
-def login(user_id):
-    session_id = f"session_{user_id}"
-    session_data = {
-        "user_id": user_id,
-        "login_time": datetime.now().isoformat(),
-        "expires_at": (datetime.now() + timedelta(minutes=30)).isoformat()
+def main_menu():
+    session_id = None
+    user_id = None
+
+    while True:
+        if not session_id:
+            print("\nMenu Principal:")
+            print("1 - Criar nova conta")
+            print("2 - Fazer login")
+            print("S - Sair do Menu")
+            key = input("Digite a opção desejada: ")
+
+            if key == '1':
+                user_id = create_new_user()
+                if user_id:
+                    session_id = create_session(user_id)
+                    print("Usuário criado e logado com sucesso!")
+            elif key == '2':
+                user_id = user_login()
+                if user_id:
+                    session_id = create_session(user_id)
+                    print("Login bem-sucedido!")
+            elif key.upper() == 'S':
+                print("Saindo do menu. Até logo!")
+                break
+            else:
+                print("Opção inválida. Por favor, digite uma opção válida.")
+        else:
+            if not check_session(session_id):
+                print("Sessão expirada. Por favor, faça login novamente.")
+                session_id = None
+                user_id = None
+                continue
+
+            print("\nMenu Principal:")
+            print("1 - Criar produto")
+            print("2 - Listar meus produtos")
+            print("3 - Realizar compra")
+            print("4 - Ver perfil")
+            print("5 - Lixeira")
+            print("6 - Favoritos")
+            print("L - Logout")
+            print("S - Sair do Menu")
+            key = input("Digite a opção desejada: ")
+
+            if key == '1':
+                create_product_menu(user_id)
+            elif key == '2':
+                list_my_products(user_id)
+            elif key == '3':
+                make_purchase(user_id)
+            elif key == '4':
+                view_profile(user_id)
+            elif key == '5':
+                trash_menu(user_id)
+            elif key == '6':
+                favorites_menu(user_id)
+            elif key.upper() == 'L':
+                end_session(session_id)
+                session_id = None
+                user_id = None
+                print("Logout realizado com sucesso.")
+            elif key.upper() == 'S':
+                print("Saindo do menu. Até logo!")
+                break
+            else:
+                print("Opção inválida. Por favor, digite uma opção válida.")
+
+def create_new_user():
+    print("\nCriar novo usuário:")
+    user_data = {
+        "nome": input("Digite o nome: "),
+        "sobrenome": input("Digite o sobrenome: "),
+        "cpf": input("Digite o CPF: "),
+        "endereco": input("Digite o endereço: "),
+        "email": input("Digite o email: "),
+        "telefone": input("Digite o telefone: "),
+        "senha": input("Digite a senha: ")
     }
-    r.set(session_id, json.dumps(session_data), ex=1800)  # 30 minutos de expiração
-    return session_id, session_data
-
-def check_session(session_id):
-    session_data = r.get(session_id)
-    if session_data:
-        session_data = json.loads(session_data)
-        if datetime.fromisoformat(session_data['expires_at']) > datetime.now():
-            return True
-    return False
+    try:
+        user_id = create_user(user_data)
+        return user_id
+    except Exception as e:
+        print(f"Erro ao criar usuário: {e}")
+        return None
 
 def user_login():
-    while True:
-        user_id = input("Digite seu ID de usuário: ")
-        senha = input("Digite sua senha: ")  # Simplificação, considerar hash/sal na produção
-        # Verifica usuário e senha no MongoDB
-        user = db.Usuário.find_one({"_id": user_id, "senha": senha})  # Certifique-se de que a senha está armazenada
-        if user:
-            session_id, session_data = login(user_id)
-            print("Login bem-sucedido!")
-            return session_id, user_id
-        else:
-            print("Usuário ou senha incorretos. Tente novamente.")
+    print("\nLogin de usuário:")
+    cpf = input("Digite o CPF: ")
+    senha = input("Digite a senha: ")
+    user = usuarios_collection.find_one({"cpf": cpf})
+    if user and user["senha"] == senha:
+        print("Login bem-sucedido!")
+        return str(user["_id"])
+    else:
+        print("Usuário ou senha incorretos.")
+        return None
 
-def create_user():
-    user_id = input("Digite seu ID de usuário: ")
-    senha = input("Digite sua senha: ")  # Simplificação, considerar hash/sal na produção
-    nome = input("Nome: ")
-    sobrenome = input("Sobrenome: ")
-    enderecos = []
-    add_more = 'S'
-    while add_more.upper() == 'S':
-        rua = input("Rua: ")
-        num = input("Número: ")
-        bairro = input("Bairro: ")
-        cidade = input("Cidade: ")
-        estado = input("Estado: ")
-        cep = input("CEP: ")
-        endereco = {
-            "rua": rua,
-            "num": num,
-            "bairro": bairro,
-            "cidade": cidade,
-            "estado": estado,
-            "cep": cep
-        }
-        enderecos.append(endereco)
-        add_more = input("Deseja adicionar outro endereço? (S/N) ")
-
-    usuario = {
-        "_id": user_id,
-        "senha": senha,
-        "nome": nome,
-        "sobrenome": sobrenome,
-        "enderecos": enderecos
-    }
-    db.Usuário.insert_one(usuario)
-    print("Usuário criado com sucesso!")
-
-# Menu Principal
-key = 0
-while key != 'S':
-    print("Bem-vindo! Por favor, faça login ou crie uma nova conta.")
-    print("1 - Criar nova conta")
-    print("2 - Fazer login")
-    key = input("Digite a opção desejada: ")
-
-    if key == '1':
-        create_user()
-    elif key == '2':
-        session_id, user_id = user_login()
-        if session_id:
-            key = 0  # Reset key to enter the main menu
-
-            while key != 'S':
-                if not check_session(session_id):
-                    print("Sua sessão expirou. Por favor, faça login novamente.")
-                    session_id, user_id = user_login()
-
-                print("1 - CRUD Usuário")
-                print("2 - CRUD Vendedor")
-                print("3 - CRUD Produto")
-                print("4 - Compras")
-                print("5 - Favoritos")
-                key = input("Digite a opção desejada? (S para sair) ")
-
-                if key == '1':
-                    print("Menu do Usuário")
-                    print("1 - Criar Usuário")
-                    print("2 - Visualizar Usuário")
-                    print("3 - Atualizar Usuário")
-                    print("4 - Deletar Usuário")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_usuario.create_usuario()
-                    elif sub == '2':
-                        nomeUsuario = input("Visualizar usuário, deseja algum nome especifico? ")
-                        crud_usuario.read_usuario(nomeUsuario)
-                    elif sub == '3':
-                        nomeUsuario = input("Atualizar usuário, deseja algum nome especifico? ")
-                        crud_usuario.update_usuario(nomeUsuario)
-                    elif sub == '4':
-                        nomeUsuario = input("Nome a ser deletado: ")
-                        sobrenome = input("Sobrenome a ser deletado: ")
-                        crud_usuario.delete_usuario(nomeUsuario, sobrenome)
-
-                elif key == '2':
-                    print("Menu do Vendedor")
-                    print("1 - Criar Vendedor")
-                    print("2 - Ler Vendedor")
-                    print("3 - Atualizar Vendedor")
-                    print("4 - Deletar Vendedor")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_vendedor.create_vendedor()
-                    elif sub == '2':
-                        nomeVendedor = input("Ler vendedor, deseja algum nome especifico? ")
-                        crud_vendedor.read_vendedor(nomeVendedor)
-                    elif sub == '3':
-                        nomeVendedor = input("Atualizar vendedor, deseja algum nome especifico? ")
-                        crud_vendedor.update_vendedor(nomeVendedor)
-                    elif sub == '4':
-                        nomeVendedor = input("Nome do vendedor a ser deletado: ")
-                        cpfVendedor = input("CPF do vendedor a ser deletado: ")
-                        crud_vendedor.delete_vendedor(nomeVendedor, cpfVendedor)
-
-                elif key == '3':
-                    print("Menu do Produto")
-                    print("1 - Criar Produto")
-                    print("2 - Ver Produto")
-                    print("3 - Atualizar Produto")
-                    print("4 - Deletar Produto")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_produto.create_produto()
-                    elif sub == '2':
-                        nomeProduto = input("Visualizar produtos, deseja algum nome especifico? Caso não, pressione enter")
-                        crud_produto.read_produto(nomeProduto)
-                    elif sub == '3':
-                        nomeProduto = input("Atualizar produtos, deseja algum nome especifico? ")
-                        crud_produto.update_produto(nomeProduto)
-                    elif sub == '4':
-                        nomeProduto = input("Nome a ser deletado: ")
-                        crud_produto.delete_produto(nomeProduto)
-
-                elif key == '4':
-                    print("Compras")
-                    print("1 - Realizar compra")
-                    print("2 - Ver compras realizadas")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        carrinho_usuario = crud_compras.realizar_compra(cpf_usuario)
-                    elif sub == '2':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        crud_compras.ver_compras_realizadas(cpf_usuario)
-
-                elif key == '5':
-                    print("Favoritos")
-                    print("1 - Adicionar favoritos")
-                    print("2 - Visualizar favoritos")
-                    print("3 - Deletar favoritos")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_favoritos.adicionarnovo_favorito()
-                    elif sub == '2':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        crud_favoritos.visualizar_favoritos(cpf_usuario)
-                    elif sub == '3':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        id_produto = input("Digite o ID do produto que deseja remover dos favoritos: ")
-                        crud_favoritos.excluir_favorito(cpf_usuario, id_produto)
-                else:
-                    print("Opção inválida. Por favor, digite uma opção válida.")
-
-print("Tchau, tchau! Volte sempre!")
-import redis
-import pymongo
-import json
-from pymongo.server_api import ServerApi
-from datetime import datetime, timedelta
-from pymongo.mongo_client import MongoClient
-
-import crud_usuario
-import crud_produto
-import crud_vendedor
-import crud_compras
-import crud_favoritos
-
-# Conexão com o Redis
-r = redis.Redis(
-    host='redis-17733.c11.us-east-1-2.ec2.redns.redis-cloud.com',
-    port=17733,
-    password='FX4HKWXiS1lTASjrm1SE7nWKhqJtW55s'
-)
-
-# Substitua '<password>' pela sua senha real.
-client = pymongo.MongoClient(
-    "mongodb+srv://silmara:123@cluster0.05p7qyc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0", 
-    server_api=ServerApi('1')
-)
-db = client.mercadolivre
-
-def login(user_id):
-    session_id = f"session_{user_id}"
-    session_data = {
-        "user_id": user_id,
-        "login_time": datetime.now().isoformat(),
-        "expires_at": (datetime.now() + timedelta(minutes=30)).isoformat()
-    }
-    r.set(session_id, json.dumps(session_data), ex=1800)  
-    return session_id, session_data
+def create_session(user_id):
+    session_id = str(uuid.uuid4())
+    redis_client.setex(f"session:{session_id}", SESSION_TIMEOUT, user_id)
+    return session_id
 
 def check_session(session_id):
-    session_data = r.get(session_id)
-    if session_data:
-        session_data = json.loads(session_data)
-        if datetime.fromisoformat(session_data['expires_at']) > datetime.now():
-            return True
-    return False
+    return redis_client.exists(f"session:{session_id}")
 
-def user_login():
-    while True:
-        user_id = input("Digite seu ID de usuário: ")
-        senha = input("Digite sua senha: ")  
+def end_session(session_id):
+    redis_client.delete(f"session:{session_id}")
 
-        user = db.Usuário.find_one({"_id": user_id, "senha": senha})  
-        if user:
-            session_id, session_data = login(user_id)
-            print("Login bem-sucedido!")
-            return session_id, user_id
-        else:
-            print("Usuário ou senha incorretos. Tente novamente.")
+def create_user(user_data):
+    if usuarios_collection.find_one({"cpf": user_data["cpf"]}):
+        raise Exception("CPF já cadastrado.")
+    result = usuarios_collection.insert_one(user_data)
+    return str(result.inserted_id)
 
-def create_user():
-    user_id = input("Digite seu ID de usuário: ")
-    senha = input("Digite sua senha: ")  
-    nome = input("Nome: ")
-    sobrenome = input("Sobrenome: ")
-    enderecos = []
-    add_more = 'S'
-    while add_more.upper() == 'S':
-        rua = input("Rua: ")
-        num = input("Número: ")
-        bairro = input("Bairro: ")
-        cidade = input("Cidade: ")
-        estado = input("Estado: ")
-        cep = input("CEP: ")
-        endereco = {
-            "rua": rua,
-            "num": num,
-            "bairro": bairro,
-            "cidade": cidade,
-            "estado": estado,
-            "cep": cep
-        }
-        enderecos.append(endereco)
-        add_more = input("Deseja adicionar outro endereço? (S/N) ")
+def read_user(user_id):
+    user = usuarios_collection.find_one({"_id": user_id})
+    return user
 
-    usuario = {
-        "_id": user_id,
-        "senha": senha,
-        "nome": nome,
-        "sobrenome": sobrenome,
-        "enderecos": enderecos
+def update_user(user_id, updated_data):
+    result = usuarios_collection.update_one({"_id": user_id}, {"$set": updated_data})
+    return result.modified_count
+
+def delete_user(user_id):
+    result = usuarios_collection.delete_one({"_id": user_id})
+    return result.deleted_count > 0
+
+def create_product(product_data):
+    result = produtos_collection.insert_one(product_data)
+    return str(result.inserted_id)
+
+def read_product(product_id):
+    product = produtos_collection.find_one({"_id": product_id})
+    return product
+
+def update_product(product_id, updated_data):
+    result = produtos_collection.update_one({"_id": product_id}, {"$set": updated_data})
+    return result.modified_count
+
+def delete_product(product_id):
+    result = produtos_collection.delete_one({"_id": product_id})
+    return result.deleted_count > 0
+
+def list_user_products(user_id):
+    products = produtos_collection.find({"user_id": user_id})
+    return list(products)
+
+def list_all_products(exclude_user_id):
+    products = produtos_collection.find({"user_id": {"$ne": exclude_user_id}})
+    return list(products)
+
+def create_product_menu(user_id):
+    print("\nCriar produto:")
+    product_data = {
+        "user_id": user_id,
+        "nome": input("Digite o nome do produto: "),
+        "preco": float(input("Digite o preço: ")),
+        "quantia": int(input("Digite a quantidade no estoque: ")),
+        "marca": input("Digite a marca: ")
     }
-    db.Usuário.insert_one(usuario)
-    print("Usuário criado com sucesso!")
+    try:
+        create_product(product_data)
+        print("Produto criado com sucesso!")
+    except Exception as e:
+        print(f"Erro ao criar produto: {e}")
 
+def list_my_products(user_id):
+    products = list_user_products(user_id)
+    if products:
+        for product in products:
+            print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}, Quantia: {product['quantia']}, Marca: {product['marca']}")
+    else:
+        print("Você não possui produtos cadastrados.")
 
-key = 0
-while key != 'S':
-    print("Bem-vindo! Por favor, faça login ou crie uma nova conta.")
-    print("1 - Criar nova conta")
-    print("2 - Fazer login")
-    key = input("Digite a opção desejada: ")
+def make_purchase(user_id):
+    products = list_all_products(user_id)
+    if not products:
+        print("Não há produtos disponíveis para compra.")
+        return
 
-    if key == '1':
-        create_user()
-    elif key == '2':
-        session_id, user_id = user_login()
-        if session_id:
-            key = 0  
+    cart = []
+    while True:
+        print("\nProdutos disponíveis:")
+        for i, product in enumerate(products):
+            print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
 
-            while key != 'S':
-                if not check_session(session_id):
-                    print("Sua sessão expirou. Por favor, faça login novamente.")
-                    session_id, user_id = user_login()
+        choice = input("Digite o número do produto que deseja adicionar ao carrinho (ou 'F' para finalizar a compra): ")
+        if choice.upper() == 'F':
+            break
 
-                print("1 - CRUD Usuário")
-                print("2 - CRUD Vendedor")
-                print("3 - CRUD Produto")
-                print("4 - Compras")
-                print("5 - Favoritos")
-                key = input("Digite a opção desejada? (S para sair) ")
+        try:
+            product_index = int(choice) - 1
+            if 0 <= product_index < len(products):
+                product = products[product_index]
+                cart.append(product)
+                print(f"Produto '{product['nome']}' adicionado ao carrinho.")
+            else:
+                print("Opção inválida.")
+        except ValueError:
+            print("Opção inválida.")
 
-                if key == '1':
-                    print("Menu do Usuário")
-                    print("1 - Criar Usuário")
-                    print("2 - Visualizar Usuário")
-                    print("3 - Atualizar Usuário")
-                    print("4 - Deletar Usuário")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_usuario.create_usuario()
-                    elif sub == '2':
-                        nomeUsuario = input("Visualizar usuário, deseja algum nome especifico? ")
-                        crud_usuario.read_usuario(nomeUsuario)
-                    elif sub == '3':
-                        nomeUsuario = input("Atualizar usuário, deseja algum nome especifico? ")
-                        crud_usuario.update_usuario(nomeUsuario)
-                    elif sub == '4':
-                        nomeUsuario = input("Nome a ser deletado: ")
-                        sobrenome = input("Sobrenome a ser deletado: ")
-                        crud_usuario.delete_usuario(nomeUsuario, sobrenome)
+    if cart:
+        total = sum(product['preco'] for product in cart)
+        print(f"\nTotal da compra: {total}")
+        confirm = input("Deseja confirmar a compra? (S/N): ")
+        if confirm.upper() == 'S':
+            for product in cart:
+                update_product(product['_id'], {"quantia": product['quantia'] - 1})
+                # Registrar a compra
+                compra = {
+                    "user_id": user_id,
+                    "product_id": product["_id"],
+                    "data_compra": datetime.now()
+                }
+                compras_collection.insert_one(compra)
+            print("Compra realizada com sucesso!")
+        else:
+            print("Compra cancelada.")
+    else:
+        print("Carrinho vazio.")
 
-                elif key == '2':
-                    print("Menu do Vendedor")
-                    print("1 - Criar Vendedor")
-                    print("2 - Ler Vendedor")
-                    print("3 - Atualizar Vendedor")
-                    print("4 - Deletar Vendedor")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_vendedor.create_vendedor()
-                    elif sub == '2':
-                        nomeVendedor = input("Ler vendedor, deseja algum nome especifico? ")
-                        crud_vendedor.read_vendedor(nomeVendedor)
-                    elif sub == '3':
-                        nomeVendedor = input("Atualizar vendedor, deseja algum nome especifico? ")
-                        crud_vendedor.update_vendedor(nomeVendedor)
-                    elif sub == '4':
-                        nomeVendedor = input("Nome do vendedor a ser deletado: ")
-                        cpfVendedor = input("CPF do vendedor a ser deletado: ")
-                        crud_vendedor.delete_vendedor(nomeVendedor, cpfVendedor)
+def trash_menu(user_id):
+    print("\nLixeira:")
+    products = list_user_products(user_id)
+    if not products:
+        print("Você não possui produtos para mover para a lixeira.")
+        return
 
-                elif key == '3':
-                    print("Menu do Produto")
-                    print("1 - Criar Produto")
-                    print("2 - Ver Produto")
-                    print("3 - Atualizar Produto")
-                    print("4 - Deletar Produto")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_produto.create_produto()
-                    elif sub == '2':
-                        nomeProduto = input("Visualizar produtos, deseja algum nome especifico? Caso não, pressione enter")
-                        crud_produto.read_produto(nomeProduto)
-                    elif sub == '3':
-                        nomeProduto = input("Atualizar produtos, deseja algum nome especifico? ")
-                        crud_produto.update_produto(nomeProduto)
-                    elif sub == '4':
-                        nomeProduto = input("Nome a ser deletado: ")
-                        crud_produto.delete_produto(nomeProduto)
+    while True:
+        print("\nProdutos disponíveis para mover para a lixeira:")
+        for i, product in enumerate(products):
+            print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
 
-                elif key == '4':
-                    print("Compras")
-                    print("1 - Realizar compra")
-                    print("2 - Ver compras realizadas")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        carrinho_usuario = crud_compras.realizar_compra(cpf_usuario)
-                    elif sub == '2':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        crud_compras.ver_compras_realizadas(cpf_usuario)
+        choice = input("Digite o número do produto que deseja mover para a lixeira (ou 'S' para sair): ")
+        if choice.upper() == 'S':
+            break
 
-                elif key == '5':
-                    print("Favoritos")
-                    print("1 - Adicionar favoritos")
-                    print("2 - Visualizar favoritos")
-                    print("3 - Deletar favoritos")
-                    sub = input("Digite a opção desejada? (V para voltar) ")
-                    if sub == '1':
-                        crud_favoritos.adicionarnovo_favorito()
-                    elif sub == '2':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        crud_favoritos.visualizar_favoritos(cpf_usuario)
-                    elif sub == '3':
-                        cpf_usuario = input("Digite o CPF do usuário: ")
-                        id_produto = input("Digite o ID do produto que deseja remover dos favoritos: ")
-                        crud_favoritos.excluir_favorito(cpf_usuario, id_produto)
-                else:
-                    print("Opção inválida. Por favor, digite uma opção válida.")
+        try:
+            product_index = int(choice) - 1
+            if 0 <= product_index < len(products):
+                product = products[product_index]
+                redis_client.setex(f"trash:{product['_id']}", TRASH_TIMEOUT, json.dumps(product, default=str))
+                delete_product(product['_id'])
+                print(f"Produto '{product['nome']}' movido para a lixeira.")
+            else:
+                print("Opção inválida.")
+        except ValueError:
+            print("Opção inválida.")
 
-print("Tchau, tchau! Volte sempre!")
+def favorites_menu(user_id):
+    print("\nFavoritos:")
+    user = read_user(user_id)
+    if "favoritos" not in user:
+        user["favoritos"] = []
+
+    while True:
+        print("\n1 - Adicionar favorito")
+        print("2 - Remover favorito")
+        print("3 - Listar favoritos")
+        print("S - Sair")
+        choice = input("Digite a opção desejada: ")
+
+        if choice == '1':
+            products = list_all_products(user_id)
+            for i, product in enumerate(products):
+                print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
+            product_choice = int(input("Digite o número do produto que deseja adicionar aos favoritos: ")) - 1
+            if 0 <= product_choice < len(products):
+                favorite_product = products[product_choice]
+                user["favoritos"].append(favorite_product["_id"])
+                update_user(user_id, {"favoritos": user["favoritos"]})
+                print(f"Produto '{favorite_product['nome']}' adicionado aos favoritos.")
+            else:
+                print("Opção inválida.")
+        elif choice == '2':
+            for i, product_id in enumerate(user["favoritos"]):
+                product = read_product(product_id)
+                print(f"{i + 1} - {product['nome']} (Preço: {product['preco']})")
+            product_choice = int(input("Digite o número do produto que deseja remover dos favoritos: ")) - 1
+            if 0 <= product_choice < len(user["favoritos"]):
+                removed_product_id = user["favoritos"].pop(product_choice)
+                update_user(user_id, {"favoritos": user["favoritos"]})
+                removed_product = read_product(removed_product_id)
+                print(f"Produto '{removed_product['nome']}' removido dos favoritos.")
+            else:
+                print("Opção inválida.")
+        elif choice == '3':
+            if user["favoritos"]:
+                for product_id in user["favoritos"]:
+                    product = read_product(product_id)
+                    print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}")
+            else:
+                print("Você não possui produtos favoritos.")
+        elif choice.upper() == 'S':
+            break
+        else:
+            print("Opção inválida.")
+
+def view_profile(user_id):
+    user = read_user(user_id)
+    if user:
+        print(f"Nome: {user['nome']}, Sobrenome: {user['sobrenome']}, CPF: {user['cpf']}, Endereço: {user['endereco']}, Email: {user['email']}, Telefone: {user['telefone']}")
+        print("Compras realizadas:")
+        compras = compras_collection.find({"user_id": user_id})
+        for compra in compras:
+            product = read_product(compra["product_id"])
+            print(f"Produto: {product['nome']}, Data da compra: {compra['data_compra']}")
+    else:
+        print("Usuário não encontrado.")
+
+if __name__ == "__main__":
+    main_menu()
