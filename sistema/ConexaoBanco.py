@@ -18,7 +18,6 @@ client = pymongo.MongoClient(
 )
 db = client.RedisMercadoLivre
 usuarios_collection = db["Usuário"]
-produtos_collection = db["Produto"]  # Supondo que você tenha uma coleção de produtos
 
 # Funções CRUD
 def create_user(user_id, user_data):
@@ -59,51 +58,77 @@ def check_session(session_id):
             return True
     return False
 
-# Funções de Manipulação de Produtos (exemplo do Mercado Livre)
-def create_product(product_id, product_data):
-    r.set(product_id, json.dumps(product_data))
-    produtos_collection.insert_one(product_data)
+# Função de login de usuário
+def user_login():
+    while True:
+        user_id = input("Digite seu ID de usuário: ")
+        senha = input("Digite sua senha: ")
 
-def read_product(product_id):
-    product_data = r.get(product_id)
-    if product_data:
-        return json.loads(product_data)
-    else:
-        return produtos_collection.find_one({"_id": product_id})
+        # Verifica usuário e senha no MongoDB
+        user = usuarios_collection.find_one({"_id": user_id, "senha": senha})
+        if user:
+            session_id, session_data = login(user_id)
+            print("Login bem-sucedido!")
+            return session_id, user_id
+        else:
+            print("Usuário ou senha incorretos. Tente novamente.")
 
-def update_product(product_id, updated_data):
-    r.set(product_id, json.dumps(updated_data))
-    produtos_collection.update_one({"_id": product_id}, {"$set": updated_data})
+# Função para criar um novo usuário
+def create_new_user():
+    user_id = input("Digite seu ID de usuário: ")
+    senha = input("Digite sua senha: ")
+    nome = input("Nome: ")
+    sobrenome = input("Sobrenome: ")
+    enderecos = []
+    add_more = 'S'
+    while add_more.upper() == 'S':
+        rua = input("Rua: ")
+        num = input("Número: ")
+        bairro = input("Bairro: ")
+        cidade = input("Cidade: ")
+        estado = input("Estado: ")
+        cep = input("CEP: ")
+        endereco = {
+            "rua": rua,
+            "num": num,
+            "bairro": bairro,
+            "cidade": cidade,
+            "estado": estado,
+            "cep": cep
+        }
+        enderecos.append(endereco)
+        add_more = input("Deseja adicionar outro endereço? (S/N) ")
 
-def delete_product(product_id):
-    r.delete(product_id)
-    produtos_collection.delete_one({"_id": product_id})
-
-# Exemplo de uso
-if __name__ == "__main__":
-    # Criar um usuário
-    user_id = "user123"
-    user_data = {
+    usuario = {
         "_id": user_id,
-        "nome": "João",
-        "sobrenome": "Silva",
-        "enderecos": [
-            {"rua": "Av. Paulista", "num": "1000", "bairro": "Centro", "cidade": "São Paulo", "estado": "SP", "cep": "01310-000"}
-        ]
+        "senha": senha,
+        "nome": nome,
+        "sobrenome": sobrenome,
+        "enderecos": enderecos
     }
-    create_user(user_id, user_data)
-    
-    # Ler o usuário
-    print(read_user(user_id))
-    
-    # Atualizar o usuário
-    updated_user_data = user_data.copy()
-    updated_user_data["sobrenome"] = "Santos"
-    update_user(user_id, updated_user_data)
-    
-    # Deletar o usuário
-    delete_user(user_id)
-    
-    # Login temporário
-    session_id, session_data = login(user_id)
-    print("Sessão ativa:", check_session(session_id))
+    create_user(user_id, usuario)
+    print("Usuário criado com sucesso!")
+
+if __name__ == "__main__":
+    while True:
+        print("Bem-vindo! Por favor, escolha uma opção:")
+        print("1 - Criar nova conta")
+        print("2 - Fazer login")
+        opcao = input("Digite a opção desejada: ")
+
+        if opcao == '1':
+            create_new_user()
+            
+        elif opcao == '2':
+            session_id, user_id = user_login()
+            if session_id:
+                print(f"Sessão ativa para o usuário {user_id}. Bem-vindo!")
+
+
+
+
+
+                break
+
+        else:
+            print("Opção inválida. Por favor, tente novamente.")
