@@ -1,16 +1,19 @@
-import redis
-from pymongo import MongoClient
-from datetime import datetime, timedelta
-import json
 import uuid
+import json
+from datetime import datetime, timedelta
+from bson import ObjectId
+from pymongo import MongoClient
+import redis
+import time
 
 # Configurar conexão com MongoDB
 uri = "mongodb+srv://silmara:123@cluster0.05p7qyc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 client = MongoClient(uri)
-db = client.RedisMercadoLivre  # Banco de dados renomeado
-usuarios_collection = db.usuarios  # Coleção de usuários
-produtos_collection = db.produtos  # Coleção de produtos
-compras_collection = db.compras  # Coleção de compras
+db = client.RedisMercadoLivre  
+usuarios_collection = db['usuarios']
+produtos_collection = db['produtos']
+lixeira_collection = db['lixeira']
+compras_collection = db['compras']
 
 # Configurar conexão com Redis
 redis_client = redis.Redis(
@@ -19,8 +22,8 @@ redis_client = redis.Redis(
     password='FX4HKWXiS1lTASjrm1SE7nWKhqJtW55s'
 )
 
-SESSION_TIMEOUT = 30 * 60  # 30 minutos
-TRASH_TIMEOUT = 30 * 60  # 30 minutos
+SESSION_TIMEOUT = 30 * 60 # 30 minutos
+TRASH_TIMEOUT = 30 * 60 # 30 minutos
 
 def main_menu():
     session_id = None
@@ -63,6 +66,7 @@ def main_menu():
             print("4 - Ver perfil")
             print("5 - Lixeira")
             print("6 - Favoritos")
+            print("7 - Excluir produto")
             print("L - Logout")
             print("S - Sair do Menu")
             key = input("Digite a opção desejada: ")
@@ -79,6 +83,8 @@ def main_menu():
                 trash_menu(user_id)
             elif key == '6':
                 favorites_menu(user_id)
+            elif key == '7':
+                delete_product_menu(user_id)
             elif key.upper() == 'L':
                 end_session(session_id)
                 session_id = None
@@ -138,15 +144,15 @@ def create_user(user_data):
     return str(result.inserted_id)
 
 def read_user(user_id):
-    user = usuarios_collection.find_one({"_id": user_id})
+    user = usuarios_collection.find_one({"_id": ObjectId(user_id)})
     return user
 
 def update_user(user_id, updated_data):
-    result = usuarios_collection.update_one({"_id": user_id}, {"$set": updated_data})
+    result = usuarios_collection.update_one({"_id": ObjectId(user_id)}, {"$set": updated_data})
     return result.modified_count
 
 def delete_user(user_id):
-    result = usuarios_collection.delete_one({"_id": user_id})
+    result = usuarios_collection.delete_one({"_id": ObjectId(user_id)})
     return result.deleted_count > 0
 
 def create_product(product_data):
@@ -154,16 +160,38 @@ def create_product(product_data):
     return str(result.inserted_id)
 
 def read_product(product_id):
-    product = produtos_collection.find_one({"_id": product_id})
+    product = produtos_collection.find_one({"_id": ObjectId(product_id)})
     return product
 
 def update_product(product_id, updated_data):
-    result = produtos_collection.update_one({"_id": product_id}, {"$set": updated_data})
+    result = produtos_collection.update_one({"_id": ObjectId(product_id)}, {"$set": updated_data})
     return result.modified_count
 
 def delete_product(product_id):
-    result = produtos_collection.delete_one({"_id": product_id})
-    return result.deleted_count > 0
+    try:
+        product_id = ObjectId(product_id)
+        product = read_product(product_id)
+        if product:
+            # Mover o produto para a coleção "lixeira"
+            lixeira_collection.insert_one(product)
+
+            # Remover o produto da coleção "produtos"
+            result = produtos_collection.delete_one({"_id": product_id})
+
+            if result.deleted_count > 0:
+                # Converter o ObjectId para string antes de salvar no Redis
+                product['_id'] = str(product['_id'])
+                trash_key = f"trash:{product['user_id']}:{product['_id']}"
+                redis_client.setex(trash_key, TRASH_TIMEOUT, json.dumps(product))
+
+                # Agendar a exclusão do produto após TRASH_TIMEOUT
+                redis_client.setex(f"delete_later:{product['_id']}", TRASH_TIMEOUT, product['_id'])
+
+            return result.deleted_count > 0
+        return False
+    except Exception as e:
+        print(f"Erro ao excluir o produto: {e}")
+        return False
 
 def list_user_products(user_id):
     products = produtos_collection.find({"user_id": user_id})
@@ -174,179 +202,220 @@ def list_all_products(exclude_user_id):
     return list(products)
 
 def create_product_menu(user_id):
-    print("\nCriar produto:")
-    product_data = {
-        "user_id": user_id,
-        "nome": input("Digite o nome do produto: "),
-        "preco": float(input("Digite o preço: ")),
-        "quantia": int(input("Digite a quantidade no estoque: ")),
-        "marca": input("Digite a marca: ")
-    }
-    try:
-        create_product(product_data)
-        print("Produto criado com sucesso!")
-    except Exception as e:
-        print(f"Erro ao criar produto: {e}")
+    while True:
+        print("\nCriar produto:")
+        product_data = {
+            "user_id": user_id,
+            "nome": input("Digite o nome do produto: "),
+            "preco": float(input("Digite o preço: ")),
+            "quantia": int(input("Digite a quantidade no estoque: ")),
+            "marca": input("Digite a marca: ")
+        }
+        try:
+            create_product(product_data)
+            print("Produto criado com sucesso!")
+        except Exception as e:
+            print(f"Erro ao criar produto: {e}")
+
+        back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+        if back_to_menu.upper() == 'S':
+            break
 
 def list_my_products(user_id):
-    products = list_user_products(user_id)
-    if products:
-        for product in products:
-            print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}, Quantia: {product['quantia']}, Marca: {product['marca']}")
-    else:
-        print("Você não possui produtos cadastrados.")
+    while True:
+        products = list_user_products(user_id)
+        if products:
+            for product in products:
+                print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}, Quantia: {product['quantia']}, Marca: {product['marca']}")
+        else:
+            print("Você não possui produtos cadastrados.")
+
+        back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+        if back_to_menu.upper() == 'S':
+            break
 
 def make_purchase(user_id):
-    products = list_all_products(user_id)
-    if not products:
-        print("Não há produtos disponíveis para compra.")
-        return
-
-    cart = []
     while True:
-        print("\nProdutos disponíveis:")
-        for i, product in enumerate(products):
-            print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
+        products = list_all_products(user_id)
+        if not products:
+            print("Não há produtos disponíveis para compra.")
+            back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+            if back_to_menu.upper() == 'S':
+                break
+            continue
 
-        choice = input("Digite o número do produto que deseja adicionar ao carrinho (ou 'F' para finalizar a compra): ")
-        if choice.upper() == 'F':
+        cart = []
+        while True:
+            print("\nProdutos disponíveis:")
+            for i, product in enumerate(products):
+                print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
+
+            choice = input("Digite o número do produto que deseja adicionar ao carrinho (ou 'F' para finalizar): ")
+
+            if choice.upper() == 'F':
+                break
+
+            try:
+                product_index = int(choice) - 1
+                if 0 <= product_index < len(products):
+                    product = products[product_index]
+                    cart.append(product)
+                    print(f"Produto '{product['nome']}' adicionado ao carrinho.")
+                else:
+                    print("Opção inválida.")
+            except ValueError:
+                print("Opção inválida.")
+
+        if cart:
+            total = sum(product['preco'] for product in cart)
+            print(f"\nTotal da compra: {total}")
+            confirm = input("Deseja confirmar a compra? (S/N): ")
+            if confirm.upper() == 'S':
+                for product in cart:
+                    update_product(product['_id'], {"quantia": product['quantia'] - 1})
+
+                    compra = {
+                        "user_id": user_id,
+                        "product_id": product['_id'],
+                        "data_compra": datetime.now()
+                    }
+                    compras_collection.insert_one(compra)
+                print("Compra realizada com sucesso!")
+            else:
+                print("Compra cancelada.")
+        else:
+            print("Nenhum produto adicionado ao carrinho.")
+
+        back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+        if back_to_menu.upper() == 'S':
             break
 
-        try:
-            product_index = int(choice) - 1
-            if 0 <= product_index < len(products):
-                product = products[product_index]
-                cart.append(product)
-                print(f"Produto '{product['nome']}' adicionado ao carrinho.")
-            else:
-                print("Opção inválida.")
-        except ValueError:
-            print("Opção inválida.")
-
-    if cart:
-        total = sum(product['preco'] for product in cart)
-        print(f"\nTotal da compra: {total}")
-        confirm = input("Deseja confirmar a compra? (S/N): ")
-        if confirm.upper() == 'S':
-            for product in cart:
-                update_product(product['_id'], {"quantia": product['quantia'] - 1})
-                # Registrar a compra
-                compra = {
-                    "user_id": user_id,
-                    "product_id": product["_id"],
-                    "data_compra": datetime.now()
-                }
-                compras_collection.insert_one(compra)
-            print("Compra realizada com sucesso!")
+def view_profile(user_id):
+    while True:
+        user = read_user(user_id)
+        if user:
+            print(f"\nPerfil do usuário:\nNome: {user['nome']}\nSobrenome: {user['sobrenome']}\nCPF: {user['cpf']}\nEndereço: {user['endereco']}\nEmail: {user['email']}\nTelefone: {user['telefone']}")
         else:
-            print("Compra cancelada.")
-    else:
-        print("Carrinho vazio.")
+            print("Usuário não encontrado.")
+
+        back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+        if back_to_menu.upper() == 'S':
+            break
 
 def trash_menu(user_id):
-    print("\nLixeira:")
-    products = list_user_products(user_id)
-    if not products:
-        print("Você não possui produtos para mover para a lixeira.")
-        return
-
     while True:
-        print("\nProdutos disponíveis para mover para a lixeira:")
-        for i, product in enumerate(products):
+        print("\nLixeira:")
+        trash_key_prefix = f"trash:{user_id}:"
+        trash_keys = redis_client.keys(f"{trash_key_prefix}*")
+        if not trash_keys:
+            print("Você não possui produtos na lixeira.")
+            back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+            if back_to_menu.upper() == 'S':
+                break
+            continue
+
+        print("\nProdutos na lixeira:")
+        for i, trash_key in enumerate(trash_keys):
+            product_id = trash_key.decode().replace(trash_key_prefix, '')
+            product = json.loads(redis_client.get(trash_key))
             print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
 
-        choice = input("Digite o número do produto que deseja mover para a lixeira (ou 'S' para sair): ")
-        if choice.upper() == 'S':
-            break
+        print("\nOpções:")
+        print("1 - Restaurar produto")
+        print("2 - Excluir definitivamente produto")
+        print("V - Voltar ao Menu Principal")
+        choice = input("Digite a opção desejada: ")
 
-        try:
-            product_index = int(choice) - 1
-            if 0 <= product_index < len(products):
-                product = products[product_index]
-                redis_client.setex(f"trash:{product['_id']}", TRASH_TIMEOUT, json.dumps(product, default=str))
-                delete_product(product['_id'])
-                print(f"Produto '{product['nome']}' movido para a lixeira.")
+        if choice == '1':
+            product_index = int(input("Digite o número do produto que deseja restaurar: ")) - 1
+            if 0 <= product_index < len(trash_keys):
+                trash_key = trash_keys[product_index]
+                product_id = trash_key.decode().replace(trash_key_prefix, '')
+                product = json.loads(redis_client.get(trash_key))
+                create_product(product)  # Restaurar produto para a coleção "produtos"
+                redis_client.delete(trash_key)  # Remover do Redis
+                lixeira_collection.delete_one({"_id": ObjectId(product_id)})  # Remover da coleção "lixeira"
+                print(f"Produto '{product['nome']}' restaurado com sucesso.")
             else:
                 print("Opção inválida.")
-        except ValueError:
+
+        elif choice == '2':
+            product_index = int(input("Digite o número do produto que deseja excluir definitivamente: ")) - 1
+            if 0 <= product_index < len(trash_keys):
+                trash_key = trash_keys[product_index]
+                product_id = trash_key.decode().replace(trash_key_prefix, '')
+                redis_client.delete(trash_key)  # Remover do Redis
+                lixeira_collection.delete_one({"_id": ObjectId(product_id)})  # Remover da coleção "lixeira"
+                print("Produto excluído definitivamente da lixeira.")
+            else:
+                print("Opção inválida.")
+
+        elif choice.upper() == 'V':
+            break
+
+        else:
             print("Opção inválida.")
 
 def favorites_menu(user_id):
-    print("\nFavoritos:")
-    user = read_user(user_id)
-    if user:
-        if "favoritos" not in user:
-            user["favoritos"] = []
+    while True:
+        print("\nFavoritos:")
+        # Aqui você pode adicionar a lógica para listar, adicionar e remover produtos dos favoritos.
 
-        while True:
-            print("\n1 - Adicionar favorito")
-            print("2 - Remover favorito")
-            print("3 - Listar favoritos")
-            print("S - Sair")
-            choice = input("Digite a opção desejada: ")
+        back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+        if back_to_menu.upper() == 'S':
+            break
 
-            if choice == '1':
-                products = list_all_products(user_id)
-                for i, product in enumerate(products):
-                    print(f"{i + 1} - {product['nome']} (Preço: {product['preco']}, Quantia: {product['quantia']})")
-                product_choice = int(input("Digite o número do produto que deseja adicionar aos favoritos: ")) - 1
-                if 0 <= product_choice < len(products):
-                    favorite_product = products[product_choice]
-                    user["favoritos"].append(str(favorite_product["_id"]))  # Convertendo para string
-                    update_user(user_id, {"favoritos": user["favoritos"]})
-                    print(f"Produto '{favorite_product['nome']}' adicionado aos favoritos.")
-                else:
-                    print("Opção inválida.")
-            elif choice == '2':
-                for i, product_id in enumerate(user["favoritos"]):
-                    product = read_product(product_id)
-                    if product:
-                        print(f"{i + 1} - {product['nome']} (Preço: {product['preco']})")
-                product_choice = int(input("Digite o número do produto que deseja remover dos favoritos: ")) - 1
-                if 0 <= product_choice < len(user["favoritos"]):
-                    removed_product_id = user["favoritos"].pop(product_choice)
-                    update_user(user_id, {"favoritos": user["favoritos"]})
-                    removed_product = read_product(removed_product_id)
-                    if removed_product:
-                        print(f"Produto '{removed_product['nome']}' removido dos favoritos.")
-                    else:
-                        print("Produto não encontrado.")
-                else:
-                    print("Opção inválida.")
-            elif choice == '3':
-                if user["favoritos"]:
-                    for product_id in user["favoritos"]:
-                        product = read_product(product_id)
-                        if product:
-                            print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}")
-                        else:
-                            print(f"Produto com ID {product_id} não encontrado.")
-                else:
-                    print("Você não possui produtos favoritos.")
-            elif choice.upper() == 'S':
+def delete_product_menu(user_id):
+    while True:
+        print("\nExcluir produto:")
+        products = list_user_products(user_id)
+
+        if not products:
+            print("Você não possui produtos para excluir.")
+            back_to_menu = input("Deseja voltar ao menu principal? (S/N): ")
+            if back_to_menu.upper() == 'S':
                 break
+            continue
+
+        print("\nProdutos disponíveis para exclusão:")
+        for i, product in enumerate(products):
+            print(f"{i + 1} - ID: {product['_id']}, Nome: {product['nome']}")
+
+        choice = input("Digite o número do produto que deseja excluir (ou 'V' para voltar ao Menu Principal): ")
+
+        if choice.upper() == 'V':
+            break
+
+        try:
+            product_index = int(choice) - 1
+            if 0 <= product_index < len(products):
+                product_id = products[product_index]['_id']
+                if delete_product(product_id):
+                    print("Produto movido para a lixeira com sucesso.")
+                    products = list_user_products(user_id)  # Atualizar a lista de produtos após exclusão
+                else:
+                    print("Não foi possível mover o produto para a lixeira.")
             else:
                 print("Opção inválida.")
-    else:
-        print("Usuário não encontrado.")
+        except ValueError:
+            print("Opção inválida. Digite um número válido.")
 
-
-def view_profile(user_id):
-
-    from bson import ObjectId
-    user_id = ObjectId(user_id)  
-
-    user = read_user(user_id)
-    if user:
-        print(f"Nome: {user['nome']}, Sobrenome: {user['sobrenome']}, CPF: {user['cpf']}, Endereço: {user['endereco']}, Email: {user['email']}, Telefone: {user['telefone']}")
-        print("Compras realizadas:")
-        compras = compras_collection.find({"user_id": user_id})
-        for compra in compras:
-            product = read_product(compra["product_id"])
-            print(f"Produto: {product['nome']}, Data da compra: {compra['data_compra']}")
-    else:
-        print("Usuário não encontrado.")
-
+def schedule_deletion():
+    while True:
+        # Verificar periodicamente se há produtos agendados para exclusão
+        delete_keys = redis_client.keys("delete_later:*")
+        for delete_key in delete_keys:
+            product_id = redis_client.get(delete_key).decode()
+            if not redis_client.exists(f"trash:{product_id}"):
+                lixeira_collection.delete_one({"_id": ObjectId(product_id)})
+                redis_client.delete(delete_key)
+        # Aguarda 1 minuto antes de verificar novamente
+        time.sleep(60)
 
 if __name__ == "__main__":
+    # Iniciar a tarefa de agendamento de exclusão em segundo plano
+    import threading
+    deletion_thread = threading.Thread(target=schedule_deletion, daemon=True)
+    deletion_thread.start()
+
     main_menu()
