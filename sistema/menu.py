@@ -188,19 +188,16 @@ def delete_product(product_id):
         product_id = ObjectId(product_id)
         product = read_product(product_id)
         if product:
-            # Mover o produto para a coleção "lixeira"
+
             lixeira_collection.insert_one(product)
 
-            # Remover o produto da coleção "produtos"
             result = produtos_collection.delete_one({"_id": product_id})
 
             if result.deleted_count > 0:
-                # Converter o ObjectId para string antes de salvar no Redis
                 product['_id'] = str(product['_id'])
                 trash_key = f"trash:{product['user_id']}:{product['_id']}"
                 redis_client.setex(trash_key, TRASH_TIMEOUT, json.dumps(product))
 
-                # Agendar a exclusão do produto após TRASH_TIMEOUT
                 redis_client.setex(f"delete_later:{product['_id']}", TRASH_TIMEOUT, product['_id'])
 
             return result.deleted_count > 0
