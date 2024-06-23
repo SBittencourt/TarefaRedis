@@ -103,7 +103,9 @@ def main_menu():
                 session_id = None
                 user_id = None
                 print("Logout realizado com sucesso.")
+
             elif key.upper() == 'S':
+                end_session(session_id)
                 print("Saindo do menu. Até logo!")
                 break
             else:
@@ -133,7 +135,7 @@ def user_login():
     senha = input("Digite a senha: ")
     user = usuarios_collection.find_one({"cpf": cpf})
     if user and user["senha"] == senha:
-        # Verificar se a conta está marcada para exclusão
+        
         if redis_client.exists(f"delete_account:{user['_id']}"):
             redis_client.delete(f"delete_account:{user['_id']}")
             print("Exclusão da conta cancelada com sucesso!")
@@ -151,7 +153,18 @@ def check_session(session_id):
     return redis_client.exists(f"session:{session_id}")
 
 def end_session(session_id):
+    user_id = redis_client.get(f"session:{session_id}")
+    if user_id:
+        user_id = user_id.decode('utf-8')  
+        trash_keys = redis_client.keys(f"trash:{user_id}:*")
+        for key in trash_keys:
+            product_id = key.decode('utf-8').split(':')[-1]
+            lixeira_collection.delete_one({"_id": ObjectId(product_id)})
+            redis_client.delete(key)
+            redis_client.delete(f"delete_later:{product_id}")
+        print("Todos os itens da lixeira foram excluídos.")
     redis_client.delete(f"session:{session_id}")
+
 
 def create_user(user_data):
     if usuarios_collection.find_one({"cpf": user_data["cpf"]}):
@@ -176,8 +189,13 @@ def create_product(product_data):
     return str(result.inserted_id)
 
 def read_product(product_id):
-    product = produtos_collection.find_one({"_id": ObjectId(product_id)})
-    return product
+    if not isinstance(product_id, ObjectId):
+        try:
+            product_id = ObjectId(product_id)
+        except errors.InvalidId:
+            return None
+    return produtos_collection.find_one({"_id": product_id})
+
 
 def update_product(product_id, updated_data):
     result = produtos_collection.update_one({"_id": ObjectId(product_id)}, {"$set": updated_data})
@@ -243,6 +261,8 @@ def list_my_products(user_id):
     for product in products:
         print(f"ID: {product['_id']}, Nome: {product['nome']}, Preço: {product['preco']}, Quantidade: {product['quantia']}, Marca: {product['marca']}")
 
+from bson import ObjectId, errors
+
 def make_purchase(user_id):
     print("\nProdutos disponíveis para compra:")
     products = list_all_products(user_id)
@@ -252,25 +272,40 @@ def make_purchase(user_id):
     product_ids = input("Digite os IDs dos produtos que deseja comprar (separados por vírgula): ").split(",")
     purchase = {
         "user_id": user_id,
-        "products": []
+        "products": [],
+        "total": 0.0
     }
 
     for product_id in product_ids:
-        product = read_product(product_id.strip())
-        if product:
-            quantity = int(input(f"Digite a quantidade para {product['nome']} (em estoque: {product['quantia']}): "))
-            if quantity <= product['quantia']:
-                purchase["products"].append({"product_id": product_id.strip(), "quantity": quantity, "price": product['preco']})
+        try:
+            product_id = ObjectId(product_id.strip())
+            product = read_product(product_id)
+            if product:
+                quantity = int(input(f"Digite a quantidade para {product['nome']} (em estoque: {product['quantia']}): "))
+                if quantity <= product['quantia']:
+                    subtotal = quantity * product['preco']
+                    purchase["products"].append({"product_id": product_id, "quantity": quantity, "price": product['preco'], "subtotal": subtotal})
+                    purchase["total"] += subtotal
+                else:
+                    print(f"Quantidade solicitada para {product['nome']} excede o estoque disponível.")
             else:
-                print(f"Quantidade solicitada para {product['nome']} excede o estoque disponível.")
-        else:
-            print(f"Produto com ID {product_id.strip()} não encontrado.")
-    
+                print(f"Produto com ID {product_id} não encontrado.")
+        except (errors.InvalidId, ValueError) as e:
+            print(f"ID do produto inválido: {product_id}")
+
     if purchase["products"]:
-        compras_collection.insert_one(purchase)
-        for item in purchase["products"]:
-            produtos_collection.update_one({"_id": ObjectId(item["product_id"])}, {"$inc": {"quantia": -item["quantity"]}})
-        print("Compra realizada com sucesso!")
+        print(f"\nValor total da compra: {purchase['total']:.2f}")
+        confirm = input("Deseja confirmar a compra? (S/N): ").strip().upper()
+        if confirm == 'S':
+            compras_collection.insert_one(purchase)
+            for item in purchase["products"]:
+                produtos_collection.update_one({"_id": item["product_id"]}, {"$inc": {"quantia": -item["quantity"]}})
+            print("Compra realizada com sucesso!")
+        else:
+            print("Compra cancelada.")
+    else:
+        print("Nenhum produto selecionado.")
+
 
 def view_profile(user_id):
     user = read_user(user_id)
@@ -282,6 +317,27 @@ def view_profile(user_id):
         print(f"Endereço: {user['endereco']}")
         print(f"Email: {user['email']}")
         print(f"Telefone: {user['telefone']}")
+
+        print("\nCompras Realizadas:")
+        purchases = compras_collection.find({"user_id": user_id})
+        total_spent = 0.0
+        if purchases:
+            for purchase in purchases:
+                total = purchase.get('total', 0.0)
+                print(f"Compra ID: {purchase['_id']}, Valor Total: {total:.2f}")
+                total_spent += total
+                for item in purchase['products']:
+                    product = read_product(item['product_id'])
+                    if product:
+                        subtotal = item.get('subtotal', item['quantity'] * item['price'])
+                        print(f" - Produto: {product['nome']}, Quantidade: {item['quantity']}, Preço: {item['price']}, Subtotal: {subtotal:.2f}")
+        else:
+            print("Nenhuma compra realizada.")
+    else:
+        print("Usuário não encontrado.")
+
+
+
 
 def trash_menu(user_id):
     while True:
@@ -436,7 +492,7 @@ def delete_user_account(user_id):
     if confirmation == 'S':
         user = read_user(user_id)
         if user:
-            user["_id"] = str(user["_id"])  # Converte ObjectId para string
+            user["_id"] = str(user["_id"])  
             redis_client.setex(f"delete_account:{user_id}", ACCOUNT_DELETION_TIMEOUT, json.dumps(user))
             print("Conta marcada para exclusão. Faça login novamente dentro de 2 minutos para cancelar a exclusão.")
             return True
