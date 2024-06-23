@@ -332,6 +332,7 @@ def trash_menu(user_id):
                 trash_key = trash_keys[product_index]
                 product_id = trash_key.decode().replace(trash_key_prefix, '')
                 product = json.loads(redis_client.get(trash_key))
+                product['_id'] = ObjectId(product['_id'])  # Convertendo de volta para ObjectId
                 create_product(product)  # Restaurar produto para a coleção "produtos"
                 redis_client.delete(trash_key)  # Remover do Redis
                 lixeira_collection.delete_one({"_id": ObjectId(product_id)})  # Remover da coleção "lixeira"
@@ -400,22 +401,6 @@ def delete_product_menu(user_id):
         except ValueError:
             print("Opção inválida. Digite um número válido.")
 
-def schedule_deletion():
-    while True:
-        # Verificar periodicamente se há produtos agendados para exclusão
-        delete_keys = redis_client.keys("delete_later:*")
-        for delete_key in delete_keys:
-            product_id = redis_client.get(delete_key).decode()
-            if not redis_client.exists(f"trash:{product_id}"):
-                lixeira_collection.delete_one({"_id": ObjectId(product_id)})
-                redis_client.delete(delete_key)
-        # Aguarda 1 minuto antes de verificar novamente
-        time.sleep(60)
-
 if __name__ == "__main__":
-    # Iniciar a tarefa de agendamento de exclusão em segundo plano
-    import threading
-    deletion_thread = threading.Thread(target=schedule_deletion, daemon=True)
-    deletion_thread.start()
-
     main_menu()
+
